@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+from typing import Any
 
 import httpx
 from telegram import Update
@@ -12,17 +13,25 @@ from telegram.ext import (
     filters,
 )
 
+
 # ============================================================
 # CONFIGURAÇÃO
 # ============================================================
 
 DOWNTIFY_URL = os.getenv(
     "DOWNTIFY_URL",
-    "http://192.168.0.123:9000"
+    "http://192.168.0.123:9000",
 ).rstrip("/")
 
-DOWNTIFY_TOKEN = os.getenv("DOWNTIFY_TOKEN", "").strip()
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+DOWNTIFY_TOKEN = os.getenv(
+    "DOWNTIFY_TOKEN",
+    "",
+).strip()
+
+TELEGRAM_BOT_TOKEN = os.getenv(
+    "TELEGRAM_BOT_TOKEN",
+    "",
+).strip()
 
 ALLOWED_USER_ID = int(
     os.getenv("TELEGRAM_ALLOWED_USER_ID", "0")
@@ -36,6 +45,7 @@ ALLOWED_THREAD_ID = int(
     os.getenv("TELEGRAM_ALLOWED_THREAD_ID", "0")
 )
 
+
 # ============================================================
 # LOG
 # ============================================================
@@ -47,18 +57,22 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+
 # ============================================================
-# CLIENTE HTTP
+# HTTP
 # ============================================================
 
 client = httpx.AsyncClient(
-    timeout=httpx.Timeout(30.0, connect=10.0)
+    timeout=httpx.Timeout(
+        60.0,
+        connect=10.0,
+    )
 )
+
 
 # ============================================================
 # AUTORIZAÇÃO
 # ============================================================
-
 
 def is_authorized(update: Update) -> bool:
     message = update.effective_message
@@ -87,11 +101,10 @@ def is_authorized(update: Update) -> bool:
 
 
 # ============================================================
-# DOWNTIFY API
+# DOWNTIFY HTTP
 # ============================================================
 
-
-def auth_headers():
+def auth_headers() -> dict[str, str]:
     if not DOWNTIFY_TOKEN:
         return {}
 
@@ -100,7 +113,11 @@ def auth_headers():
     }
 
 
-async def downtify_get(path, **kwargs):
+async def downtify_get(
+    path: str,
+    **kwargs: Any,
+) -> httpx.Response:
+
     return await client.get(
         f"{DOWNTIFY_URL}{path}",
         headers=auth_headers(),
@@ -108,7 +125,11 @@ async def downtify_get(path, **kwargs):
     )
 
 
-async def downtify_post(path, **kwargs):
+async def downtify_post(
+    path: str,
+    **kwargs: Any,
+) -> httpx.Response:
+
     return await client.post(
         f"{DOWNTIFY_URL}{path}",
         headers=auth_headers(),
@@ -117,7 +138,7 @@ async def downtify_post(path, **kwargs):
 
 
 # ============================================================
-# EXTRAÇÃO DE URL
+# URL
 # ============================================================
 
 URL_RE = re.compile(
@@ -126,30 +147,102 @@ URL_RE = re.compile(
 )
 
 
-def extract_url(text: str):
+def extract_url(text: str) -> str | None:
     match = URL_RE.search(text or "")
 
     if not match:
         return None
 
-    return match.group(0).rstrip(".,!?)]}")
+    return match.group(0).rstrip(
+        ".,!?)]}"
+    )
+
+
+# ============================================================
+# FORMATAÇÃO
+# ============================================================
+
+def truncate(
+    text: str,
+    maximum: int = 3500,
+) -> str:
+
+    if len(text) <= maximum:
+        return text
+
+    return text[:maximum] + "\n..."
+
+
+def get_resolved_songs(
+    resolved: Any,
+) -> list[dict[str, Any]]:
+
+    if isinstance(resolved, list):
+        return [
+            item
+            for item in resolved
+            if isinstance(item, dict)
+        ]
+
+    if not isinstance(resolved, dict):
+        return []
+
+    # Formatos possíveis usados pelo resolver/UI.
+    possible_keys = (
+        "songs",
+        "tracks",
+        "items",
+    )
+
+    for key in possible_keys:
+        value = resolved.get(key)
+
+        if isinstance(value, list):
+            return [
+                item
+                for item in value
+                if isinstance(item, dict)
+            ]
+
+    # Uma URL de música pode resolver diretamente
+    # para um único song object.
+    if (
+        "artist" in resolved
+        or "title" in resolved
+        or "name" in resolved
+    ):
+        return [resolved]
+
+    return []
+
+
+def is_playlist_url(url: str) -> bool:
+    url_lower = url.lower()
+
+    return (
+        "/playlist" in url_lower
+        or "list=" in url_lower
+    )
 
 
 # ============================================================
 # /start
 # ============================================================
 
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update):
         return
 
     await update.message.reply_text(
         "🎵 *Downtify Telegram*\n\n"
         "Olá! 👋\n\n"
-        "Envie uma URL do Spotify, YouTube ou outra URL "
-        "compatível com o Downtify para iniciar um download.\n\n"
-        "Use /help para ver todos os comandos disponíveis.",
+        "Envie uma música ou playlist diretamente "
+        "neste tópico para iniciar o download.\n\n"
+        "Use /help para ver todos os comandos.",
         parse_mode="Markdown",
     )
 
@@ -158,46 +251,68 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # /help
 # ============================================================
 
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update):
         return
 
-    help_text = (
+    text = (
         "🎵 *Downtify Telegram — Ajuda*\n\n"
 
-        "📥 *DOWNLOAD*\n"
-        "Envie diretamente uma URL do Spotify, YouTube ou outra "
-        "fonte compatível com o Downtify.\n\n"
+        "📥 *DOWNLOAD DE MÚSICA*\n\n"
+        "`/download URL`\n"
+        "Baixa uma música individual.\n\n"
         "Exemplo:\n"
-        "`https://open.spotify.com/track/...`\n\n"
+        "`/download https://open.spotify.com/track/...`\n\n"
+
+        "📚 *DOWNLOAD DE PLAYLIST*\n\n"
+        "`/playlist URL`\n"
+        "Adiciona todas as músicas da playlist à fila.\n\n"
+        "Exemplo:\n"
+        "`/playlist https://open.spotify.com/playlist/...`\n\n"
+
+        "🔗 *URL DIRETA*\n\n"
+        "Você também pode simplesmente enviar a URL "
+        "sem comando.\n\n"
+        "O bot identifica automaticamente se é uma "
+        "música ou playlist.\n\n"
 
         "🤖 *COMANDOS*\n\n"
 
         "*/start*\n"
-        "Inicia o bot e mostra uma breve explicação.\n\n"
+        "Inicia o bot.\n\n"
 
         "*/help*\n"
-        "Mostra esta tela de ajuda.\n\n"
+        "Mostra esta ajuda.\n\n"
+
+        "*/download URL*\n"
+        "Baixa uma música individual.\n\n"
+
+        "*/playlist URL*\n"
+        "Baixa uma playlist inteira.\n\n"
 
         "*/status*\n"
-        "Verifica se o Downtify está online e respondendo.\n\n"
+        "Verifica se o Downtify está online.\n\n"
 
         "*/queue*\n"
-        "Mostra o conteúdo atual da fila de downloads do Downtify.\n\n"
+        "Mostra a fila de downloads.\n\n"
 
-        "📌 *COMO USAR*\n\n"
-        "1. Envie uma URL neste tópico.\n"
-        "2. O bot consulta o Downtify.\n"
-        "3. A URL é adicionada à fila de download.\n"
-        "4. O Downtify realiza o download.\n\n"
+        "🎧 *FONTES*\n\n"
+        "Spotify\n"
+        "YouTube\n"
+        "YouTube Music\n"
+        "Deezer\n\n"
 
-        "🔒 *Acesso*\n"
-        "Este bot está restrito a este tópico do Telegram."
+        "🔒 *SEGURANÇA*\n\n"
+        "O bot está restrito ao usuário autorizado, "
+        "ao chat autorizado e ao tópico configurado."
     )
 
     await update.message.reply_text(
-        help_text,
+        text,
         parse_mode="Markdown",
     )
 
@@ -206,15 +321,21 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # /status
 # ============================================================
 
+async def status(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
 
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update):
         return
 
     try:
-        response = await downtify_get("/api/health")
+        response = await downtify_get(
+            "/api/health"
+        )
 
         if response.status_code == 200:
+
             try:
                 data = response.json()
                 details = str(data)
@@ -228,15 +349,19 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         else:
+
             await update.message.reply_text(
-                "🔴 *Downtify com problema*\n\n"
+                "🔴 *Downtify respondeu com erro*\n\n"
                 f"HTTP {response.status_code}\n"
-                f"{response.text[:1000]}",
+                f"{truncate(response.text, 1500)}",
                 parse_mode="Markdown",
             )
 
     except Exception as exc:
-        logger.exception("Erro ao consultar status")
+
+        logger.exception(
+            "Erro ao consultar status"
+        )
 
         await update.message.reply_text(
             "🔴 *Erro ao consultar o Downtify*\n\n"
@@ -249,38 +374,101 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # /queue
 # ============================================================
 
+async def queue(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
 
-async def queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update):
         return
 
     try:
-        response = await downtify_get("/api/queue")
+        response = await downtify_get(
+            "/api/queue"
+        )
 
         if response.status_code != 200:
+
             await update.message.reply_text(
                 "❌ Erro ao consultar a fila.\n\n"
                 f"HTTP {response.status_code}\n"
-                f"{response.text[:1000]}"
+                f"{truncate(response.text, 1500)}"
             )
+
             return
 
         data = response.json()
 
-        # Formatação simples e segura para Telegram
-        formatted = str(data)
+        if not data:
+            await update.message.reply_text(
+                "📭 A fila do Downtify está vazia."
+            )
+            return
 
-        if len(formatted) > 3500:
-            formatted = formatted[:3500] + "\n..."
+        lines = [
+            "📋 *Fila do Downtify*\n"
+        ]
+
+        for index, job in enumerate(
+            data,
+            start=1,
+        ):
+
+            song = job.get(
+                "song",
+                {}
+            )
+
+            if not isinstance(song, dict):
+                song = {}
+
+            artist = (
+                song.get("artist")
+                or job.get("artist")
+                or "Artista desconhecido"
+            )
+
+            title = (
+                song.get("title")
+                or song.get("name")
+                or job.get("title")
+                or "Faixa desconhecida"
+            )
+
+            job_status = job.get(
+                "status",
+                "unknown"
+            )
+
+            progress = job.get(
+                "progress"
+            )
+
+            if isinstance(progress, (int, float)):
+                status_text = (
+                    f"{job_status} "
+                    f"({progress:.0f}%)"
+                )
+            else:
+                status_text = job_status
+
+            lines.append(
+                f"{index}. 🎵 {artist} — {title}\n"
+                f"   Status: `{status_text}`"
+            )
+
+        text = "\n\n".join(lines)
 
         await update.message.reply_text(
-            "📋 *Fila do Downtify*\n\n"
-            f"`{formatted}`",
+            truncate(text),
             parse_mode="Markdown",
         )
 
     except Exception as exc:
-        logger.exception("Erro ao consultar fila")
+
+        logger.exception(
+            "Erro ao consultar fila"
+        )
 
         await update.message.reply_text(
             "🔴 *Erro ao consultar a fila*\n\n"
@@ -290,54 +478,114 @@ async def queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================================
-# DOWNLOAD
+# RESOLVE URL
 # ============================================================
 
+async def resolve_url(
+    url: str,
+) -> tuple[httpx.Response, Any]:
 
-async def process_url(update: Update, url: str):
-    message = update.message
-
-    await message.reply_text(
-        "🔎 Consultando o Downtify..."
+    response = await downtify_get(
+        "/api/url/resolve",
+        params={
+            "url": url,
+        },
     )
 
     try:
-        # ----------------------------------------------------
-        # Resolve URL
-        # ----------------------------------------------------
+        data = response.json()
+    except Exception:
+        data = response.text
 
-        response = await downtify_get(
-            "/api/url/resolve",
-            params={"url": url},
+    return response, data
+
+
+# ============================================================
+# DOWNLOAD DE UMA MÚSICA
+# ============================================================
+
+async def download_single(
+    update: Update,
+    url: str,
+):
+
+    message = update.message
+
+    await message.reply_text(
+        "🔎 Resolvendo a música..."
+    )
+
+    try:
+
+        response, resolved = await resolve_url(
+            url
         )
 
         if response.status_code != 200:
+
             await message.reply_text(
                 "❌ Não foi possível resolver a URL.\n\n"
                 f"HTTP {response.status_code}\n"
-                f"{response.text[:1000]}"
+                f"{truncate(str(resolved), 1500)}"
             )
+
             return
 
-        resolved = response.json()
-
-        logger.info(
-            "URL resolvida: %s",
-            resolved,
+        songs = get_resolved_songs(
+            resolved
         )
 
-        # ----------------------------------------------------
-        # Download
-        # ----------------------------------------------------
+        # Se o resolver devolveu uma lista,
+        # mas a URL é claramente de playlist,
+        # deixamos o fluxo de playlist cuidar dela.
+        if len(songs) > 1:
+
+            await download_batch(
+                update,
+                url,
+                songs,
+            )
+
+            return
+
+        if not songs:
+
+            # O endpoint /api/download/url aceita
+            # o objeto retornado pelo resolver.
+            song_body = (
+                resolved
+                if isinstance(resolved, dict)
+                else {}
+            )
+
+        else:
+
+            song_body = songs[0]
+
+        title = (
+            song_body.get("title")
+            or song_body.get("name")
+            or "Música"
+        )
+
+        artist = song_body.get(
+            "artist",
+            "Artista desconhecido",
+        )
 
         await message.reply_text(
-            "⬇️ Enviando para o Downtify..."
+            "⬇️ *Enviando para o Downtify*\n\n"
+            f"🎤 {artist}\n"
+            f"🎵 {title}",
+            parse_mode="Markdown",
         )
 
         response = await downtify_post(
             "/api/download/url",
-            params={"url": url},
-            json=resolved,
+            params={
+                "url": url,
+            },
+            json=song_body,
         )
 
         if response.status_code not in (
@@ -345,11 +593,13 @@ async def process_url(update: Update, url: str):
             201,
             202,
         ):
+
             await message.reply_text(
                 "❌ O Downtify recusou o download.\n\n"
                 f"HTTP {response.status_code}\n"
-                f"{response.text[:1500]}"
+                f"{truncate(response.text, 2000)}"
             )
+
             return
 
         try:
@@ -358,25 +608,285 @@ async def process_url(update: Update, url: str):
             result = response.text
 
         logger.info(
-            "Download enviado: %s",
+            "Download individual enviado: %s",
             result,
         )
 
         await message.reply_text(
-            "✅ *Download enviado para o Downtify!*\n\n"
-            f"{result}",
+            "✅ *Download concluído/enviado!*\n\n"
+            f"🎤 {artist}\n"
+            f"🎵 {title}\n\n"
+            f"Resposta: `{result}`",
             parse_mode="Markdown",
         )
 
     except Exception as exc:
+
         logger.exception(
-            "Erro durante download"
+            "Erro no download individual"
         )
 
         await message.reply_text(
-            "❌ *Erro ao comunicar com o Downtify:*\n\n"
+            "❌ *Erro durante o download*\n\n"
             f"{exc}",
             parse_mode="Markdown",
+        )
+
+
+# ============================================================
+# DOWNLOAD DE PLAYLIST / BATCH
+# ============================================================
+
+async def download_batch(
+    update: Update,
+    url: str,
+    songs: list[dict[str, Any]],
+):
+
+    message = update.message
+
+    if not songs:
+
+        await message.reply_text(
+            "❌ Não encontrei músicas nessa playlist."
+        )
+
+        return
+
+    await message.reply_text(
+        "📚 *Playlist encontrada*\n\n"
+        f"🎵 {len(songs)} músicas\n\n"
+        "⬇️ Enviando para a fila do Downtify..."
+        ,
+        parse_mode="Markdown",
+    )
+
+    payload = {
+        "songs": songs,
+        "playlist_url": url,
+        "generate_m3u": True,
+    }
+
+    response = await downtify_post(
+        "/api/download/batch",
+        json=payload,
+    )
+
+    if response.status_code not in (
+        200,
+        201,
+        202,
+    ):
+
+        await message.reply_text(
+            "❌ O Downtify recusou a playlist.\n\n"
+            f"HTTP {response.status_code}\n"
+            f"{truncate(response.text, 2500)}"
+        )
+
+        return
+
+    try:
+        result = response.json()
+    except Exception:
+        result = {
+            "response": response.text
+        }
+
+    count = result.get(
+        "count",
+        len(songs),
+    )
+
+    job_ids = result.get(
+        "job_ids",
+        [],
+    )
+
+    await message.reply_text(
+        "✅ *Playlist adicionada!*\n\n"
+        f"🎵 Faixas: *{count}*\n"
+        f"📋 Jobs: *{len(job_ids)}*\n"
+        "📁 M3U: ativada\n\n"
+        "Use /queue para acompanhar os downloads.",
+        parse_mode="Markdown",
+    )
+
+    logger.info(
+        "Playlist enviada | url=%s | songs=%s | result=%s",
+        url,
+        len(songs),
+        result,
+    )
+
+
+# ============================================================
+# /download
+# ============================================================
+
+async def download_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not is_authorized(update):
+        return
+
+    if not context.args:
+
+        await update.message.reply_text(
+            "❌ Informe a URL da música.\n\n"
+            "Exemplo:\n"
+            "`/download https://open.spotify.com/track/...`",
+            parse_mode="Markdown",
+        )
+
+        return
+
+    url = extract_url(
+        " ".join(context.args)
+    )
+
+    if not url:
+
+        await update.message.reply_text(
+            "❌ Não encontrei uma URL válida."
+        )
+
+        return
+
+    await download_single(
+        update,
+        url,
+    )
+
+
+# ============================================================
+# /playlist
+# ============================================================
+
+async def playlist_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not is_authorized(update):
+        return
+
+    if not context.args:
+
+        await update.message.reply_text(
+            "❌ Informe a URL da playlist.\n\n"
+            "Exemplo:\n"
+            "`/playlist https://open.spotify.com/playlist/...`",
+            parse_mode="Markdown",
+        )
+
+        return
+
+    url = extract_url(
+        " ".join(context.args)
+    )
+
+    if not url:
+
+        await update.message.reply_text(
+            "❌ Não encontrei uma URL válida."
+        )
+
+        return
+
+    await process_playlist(
+        update,
+        url,
+    )
+
+
+# ============================================================
+# PROCESSA PLAYLIST
+# ============================================================
+
+async def process_playlist(
+    update: Update,
+    url: str,
+):
+
+    message = update.message
+
+    await message.reply_text(
+        "🔎 Resolvendo a playlist..."
+    )
+
+    try:
+
+        response, resolved = await resolve_url(
+            url
+        )
+
+        if response.status_code != 200:
+
+            await message.reply_text(
+                "❌ Não foi possível resolver a playlist.\n\n"
+                f"HTTP {response.status_code}\n"
+                f"{truncate(str(resolved), 2000)}"
+            )
+
+            return
+
+        songs = get_resolved_songs(
+            resolved
+        )
+
+        if not songs:
+
+            await message.reply_text(
+                "❌ O Downtify não retornou músicas "
+                "para essa playlist.\n\n"
+                f"Resposta:\n{truncate(str(resolved), 2000)}"
+            )
+
+            return
+
+        await download_batch(
+            update,
+            url,
+            songs,
+        )
+
+    except Exception as exc:
+
+        logger.exception(
+            "Erro ao processar playlist"
+        )
+
+        await message.reply_text(
+            "❌ *Erro ao processar playlist*\n\n"
+            f"{exc}",
+            parse_mode="Markdown",
+        )
+
+
+# ============================================================
+# URL DIRETA
+# ============================================================
+
+async def direct_url(
+    update: Update,
+    url: str,
+):
+
+    if is_playlist_url(url):
+
+        await process_playlist(
+            update,
+            url,
+        )
+
+    else:
+
+        await download_single(
+            update,
+            url,
         )
 
 
@@ -384,23 +894,28 @@ async def process_url(update: Update, url: str):
 # MENSAGENS
 # ============================================================
 
-
 async def message_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+
     if not is_authorized(update):
         return
 
-    text = update.effective_message.text or ""
+    text = (
+        update.effective_message.text
+        or ""
+    )
 
     url = extract_url(text)
 
     if not url:
+
         await update.effective_message.reply_text(
-            "❓ Não encontrei nenhuma URL nessa mensagem.\n\n"
-            "Use /help para ver como utilizar o bot."
+            "❓ Não encontrei nenhuma URL.\n\n"
+            "Use /help para ver os comandos."
         )
+
         return
 
     logger.info(
@@ -411,7 +926,7 @@ async def message_handler(
         url,
     )
 
-    await process_url(
+    await direct_url(
         update,
         url,
     )
@@ -421,8 +936,8 @@ async def message_handler(
 # MAIN
 # ============================================================
 
-
 def main():
+
     if not TELEGRAM_BOT_TOKEN:
         raise RuntimeError(
             "TELEGRAM_BOT_TOKEN não configurado."
@@ -464,19 +979,45 @@ def main():
     )
 
     application.add_handler(
-        CommandHandler("start", start)
+        CommandHandler(
+            "start",
+            start,
+        )
     )
 
     application.add_handler(
-        CommandHandler("help", help_command)
+        CommandHandler(
+            "help",
+            help_command,
+        )
     )
 
     application.add_handler(
-        CommandHandler("status", status)
+        CommandHandler(
+            "status",
+            status,
+        )
     )
 
     application.add_handler(
-        CommandHandler("queue", queue)
+        CommandHandler(
+            "queue",
+            queue,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "download",
+            download_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "playlist",
+            playlist_command,
+        )
     )
 
     application.add_handler(
