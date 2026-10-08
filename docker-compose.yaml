@@ -1,0 +1,13 @@
+services:
+  downtify-telegram:
+    build: .
+    container_name: downtify-telegram
+    restart: unless-stopped
+    environment:
+      TZ: America/Sao_Paulo
+      DOWNTIFY_URL: ${DOWNTIFY_URL}
+      DOWNTIFY_TOKEN: ${DOWNTIFY_TOKEN}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_ALLOWED_USER_ID: ${TELEGRAM_ALLOWED_USER_ID}
+      TELEGRAM_ALLOWED_CHAT_ID: ${TELEGRAM_ALLOWED_CHAT_ID}
+      TELEGRAM_ALLOWED_THREAD_ID: ${TELEGRAM_ALLOWED_THREAD_ID}
